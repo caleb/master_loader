@@ -1,5 +1,3 @@
-require 'concurrent'
-
 class DelayedResult
   def initialize(&resolver)
     @resolver = resolver
@@ -19,7 +17,7 @@ class DelayedResult
   end
 
   def value!
-    @value ||= @resolver.call().yield_self do |val|
+    @value ||= @resolver.call.yield_self do |val|
       if val&.is_a?(DelayedResult)
         val.value!
       else
@@ -34,6 +32,16 @@ class DelayedResult
 end
 
 class MasterLoader
+  class Cache < ::Hash
+    def compute_if_absent(key, &block)
+      if self.has_key?(key)
+        self.fetch(key)
+      else
+        self[key] = block.call(key)
+      end
+    end
+  end
+
   class NoCache
     def compute_if_absent(_key)
       yield
@@ -41,13 +49,11 @@ class MasterLoader
   end
 
   class Batch
-    attr_accessor :name
-    attr_accessor :fulfilled
+    attr_accessor :name, :fulfilled
 
     def initialize(loader_block, name: nil, max_batch_size: Float::INFINITY)
       @name = name
-      @queue = Concurrent::Array.new
-      @lock = Concurrent::ReadWriteLock.new
+      @queue = []
       @loader_block = loader_block
       @max_batch_size = max_batch_size
       @fulfilled = false
@@ -59,23 +65,15 @@ class MasterLoader
 
       DelayedResult.new do
         results = if @fulfilled
-                    @lock.with_read_lock do
-                      @results
-                    end
+                    @results
                   else
-                    @lock.with_write_lock do
-                      if @fulfilled
-                        @results
-                      else
-                        @fulfilled = true
-                        r = @loader_block.call(@queue)
-                        @results = if r.is_a?(DelayedResult)
-                          normalize_results(r.value!)
-                        else
-                          normalize_results(r)
-                        end
-                      end
-                    end
+                    @fulfilled = true
+                    r = @loader_block.call(@queue)
+                    @results = if r.is_a?(DelayedResult)
+                                 normalize_results(r.value!)
+                               else
+                                 normalize_results(r)
+                               end
                   end
 
         unless results.key?(key)
@@ -124,12 +122,12 @@ class MasterLoader
     @cache = if options.has_key?(:cache)
                options.delete(:cache) || NoCache.new
              else
-               Concurrent::Map.new
+               Cache.new
              end
     @max_batch_size = options.fetch(:max_batch_size, Float::INFINITY)
 
-    @interceptor = options.delete(:interceptor) || -> (n) {
-      -> (ids) {
+    @interceptor = options.delete(:interceptor) || lambda { |n|
+      lambda { |ids|
         n.call(ids)
       }
     }
@@ -138,9 +136,7 @@ class MasterLoader
   end
 
   def load(key)
-    if key.nil?
-      raise TypeError, "#load must be called with a key, but got: nil"
-    end
+    raise TypeError, "#load must be called with a key, but got: nil" if key.nil?
 
     result = retrieve_from_cache(key) do
       batch.queue(key)
@@ -154,9 +150,7 @@ class MasterLoader
   end
 
   def load_many(keys)
-    unless keys.is_a?(Array)
-      raise TypeError, "#load_many must be called with an Array, but got: #{keys.class.name}"
-    end
+    raise TypeError, "#load_many must be called with an Array, but got: #{keys.class.name}" unless keys.is_a?(Array)
 
     delayed_results = keys.map(&method(:load))
     DelayedResult.new do
@@ -172,9 +166,7 @@ class MasterLoader
     end
   end
 
-  def retrieve_from_cache(key)
-    @cache.compute_if_absent(key) do
-      yield
-    end
+  def retrieve_from_cache(key, &block)
+    @cache.compute_if_absent(key, &block)
   end
 end

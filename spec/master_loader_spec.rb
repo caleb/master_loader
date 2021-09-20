@@ -128,7 +128,7 @@ describe MasterLoader do
   end
 
   it 'can be passed a primed cache' do
-    cache = Concurrent::Map.new
+    cache = MasterLoader::Cache.new
     cache[0] = 42
 
     data_loader = MasterLoader.new(cache: cache) do |ids|
@@ -170,7 +170,7 @@ describe MasterLoader do
 
     one = data_loader.load(0).value
 
-    data_loader.cache = Concurrent::Map.new
+    data_loader.cache = MasterLoader::Cache.new
     data_loader.cache[0] = 42
 
     one_again = data_loader.load(0)
@@ -261,7 +261,7 @@ describe MasterLoader do
   end
 
   it 'accepts an interceptor chain' do
-    accumulator = Concurrent::Array.new
+    accumulator = []
 
     interceptor = -> (next_interceptor) {
       -> (ids) {
